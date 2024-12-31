@@ -1,0 +1,17 @@
+{
+    "name": "black-ratio-plugin",
+    "version": "1.0.0",
+    "description": "",
+    "main": "index.js",
+    "scripts": {
+        "test": "echo \"Error: no test specified\" && exit 1",
+        "build": "tsc -p tsconfig.json"
+    },
+    "keywords": [],
+    "author": "",
+    "license": "ISC",
+    "devDependencies": {
+        "@figma/plugin-typings": "^1.97.0",
+        "typescript": "^5.5.4"
+    }
+}

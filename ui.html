@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <style>
+            body {
+                font-family: sans-serif;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                padding: 0px;
+                transition: background-color 0.3s, color 0.3s;
+            }
+            #result {
+                margin-bottom: 0px;
+                font-size: 16px;
+                font-weight: bold;
+                text-align: center;
+                transition: color 0.3s ease;
+            }
+            #preview {
+                width: 200px;
+                height: 200px;
+                border: 1px solid #ccc;
+                margin-bottom: 0px;
+                margin-top: 10px;
+                background-size: contain;
+                background-repeat: no-repeat;
+                background-position: center;
+                transition: border-color 0.3s;
+            }
+            .red {
+                color: #ff4d4d;
+            }
+            .blue {
+                color: #4d4dff;
+            }
+            .calculating {
+                color: #888;
+                font-style: italic;
+            }
+            .error {
+                color: #ff4400;
+            }
+
+            /* Light theme styles */
+            body.light-theme {
+                background-color: #ffffff;
+                color: #333333;
+            }
+            body.light-theme #preview {
+                border-color: #cccccc;
+            }
+
+            /* Dark theme styles */
+            body.dark-theme {
+                background-color: #2c2c2c;
+                color: #ffffff;
+            }
+            body.dark-theme #preview {
+                border-color: #555555;
+            }
+            body.dark-theme .red {
+                color: #ff6666;
+            }
+            body.dark-theme .blue {
+                color: #6666ff;
+            }
+            body.dark-theme .calculating {
+                color: #aaaaaa;
+            }
+        </style>
+    </head>
+    <body>
+        <div id="preview"></div>
+        <h2 id="result">请选择图层以计算</h2>
+
+        <script>
+            const resultElement = document.getElementById("result");
+            const previewElement = document.getElementById("preview");
+            const body = document.body;
+
+            let workerPool = [];
+            const MAX_WORKERS = 4;
+
+            // Initialize theme
+            updateTheme();
+
+            for (let i = 0; i < MAX_WORKERS; i++) {
+                const worker = new Worker(
+                    URL.createObjectURL(
+                        new Blob(
+                            [
+                                `  
+                self.onmessage = async function(e) {  
+                    const { bytes, width, height } = e.data;  
+                    const ratio = await calculateRatio(bytes, width, height);  
+                    self.postMessage({ type: "result", ratio });  
+                };  
+
+                async function calculateRatio(bytes, width, height) {  
+                    const img = await createImageBitmap(new Blob([bytes]));  
+                    const canvas = new OffscreenCanvas(width, height);  
+                    const ctx = canvas.getContext("2d");  
+                    ctx.drawImage(img, 0, 0);  
+
+                    const imageData = ctx.getImageData(0, 0, width, height);  
+                    const data = imageData.data;  
+
+                    let nonBlackPixels = 0;  
+                    let totalNonTransparentPixels = 0;  
+
+                    for (let i = 0; i < data.length; i += 4) {  
+                        const [r, g, b, a] = data.slice(i, i + 4);  
+                        if (a > 0) {  
+                            totalNonTransparentPixels++;  
+                            if (r > 0 || g > 0 || b > 0) {  
+                                nonBlackPixels++;  
+                            }  
+                        }  
+                    }  
+
+                    const ratio = totalNonTransparentPixels > 0  
+                        ? (nonBlackPixels / totalNonTransparentPixels) * 100  
+                        : 0;  
+
+                    return Math.round(ratio);  
+                }  
+            `,
+                            ],
+                            { type: "application/javascript" }
+                        )
+                    )
+                );
+
+                workerPool.push(worker);
+            }
+
+            window.onmessage = async (event) => {
+                const message = event.data.pluginMessage;
+                switch (message.type) {
+                    case "result":
+                        const ratio = message.value;
+                        resultElement.textContent = `非黑像素占比: ${ratio}%`;
+                        resultElement.className = ratio > 15 ? "red" : "blue";
+                        break;
+                    case "calculate":
+                        resultElement.textContent = "计算中...";
+                        resultElement.className = "calculating";
+                        try {
+                            const { bytes, width, height } = message;
+                            const worker = await getAvailableWorker();
+                            worker.onmessage = (e) => {
+                                if (e.data.type === "result") {
+                                    parent.postMessage(
+                                        {
+                                            pluginMessage: {
+                                                type: "result",
+                                                ratio: e.data.ratio,
+                                            },
+                                        },
+                                        "*"
+                                    );
+                                    worker.onmessage = null;
+                                }
+                            };
+                            worker.postMessage({ bytes, width, height });
+                        } catch (error) {
+                            parent.postMessage(
+                                {
+                                    pluginMessage: {
+                                        type: "error",
+                                        message: error.message,
+                                    },
+                                },
+                                "*"
+                            );
+                        }
+                        break;
+                    case "preview":
+                        updatePreview(message.imageData);
+                        break;
+                    case "error":
+                        resultElement.textContent = `错误: ${message.message}`;
+                        resultElement.className = "error";
+                        break;
+                    case "theme-updated":
+                        updateTheme(message.theme);
+                        break;
+                }
+            };
+
+            function getAvailableWorker() {
+                return new Promise((resolve) => {
+                    const checkWorkers = () => {
+                        for (let worker of workerPool) {
+                            if (worker.onmessage === null) {
+                                resolve(worker);
+                                return;
+                            }
+                        }
+                        setTimeout(checkWorkers, 100);
+                    };
+                    checkWorkers();
+                });
+            }
+
+            function updatePreview(imageData) {
+                const MAX_SIZE = 1024;
+
+                const blob = new Blob([imageData], { type: "image/png" });
+                createImageBitmap(blob)
+                    .then((bitmap) => {
+                        const canvas = new OffscreenCanvas(
+                            bitmap.width,
+                            bitmap.height
+                        );
+                        let width = bitmap.width;
+                        let height = bitmap.height;
+
+                        if (width > MAX_SIZE || height > MAX_SIZE) {
+                            if (width > height) {
+                                height *= MAX_SIZE / width;
+                                width = MAX_SIZE;
+                            } else {
+                                width *= MAX_SIZE / height;
+                                height = MAX_SIZE;
+                            }
+                        }
+
+                        canvas.width = width;
+                        canvas.height = height;
+
+                        const ctx = canvas.getContext("2d");
+                        ctx.drawImage(bitmap, 0, 0, width, height);
+
+                        canvas.convertToBlob().then((blob) => {
+                            const imageUrl = URL.createObjectURL(blob);
+                            previewElement.style.backgroundImage = `url(${imageUrl})`;
+                        });
+                    })
+                    .catch((error) => {
+                        console.error("Error creating preview:", error);
+                        previewElement.style.backgroundImage = "none";
+                        previewElement.textContent = "Error creating preview";
+                    });
+            }
+
+            function updateTheme(theme = "light") {
+                body.classList.remove("light-theme", "dark-theme");
+                body.classList.add(`${theme}-theme`);
+            }
+
+            // Request initial theme from the plugin
+            parent.postMessage({ pluginMessage: { type: "getTheme" } }, "*");
+        </script>
+    </body>
+</html>
